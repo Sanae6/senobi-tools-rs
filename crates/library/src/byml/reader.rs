@@ -5,7 +5,7 @@ use zerocopy::{ByteOrder, F64, FromBytes, I64, Order as ZCOrder, TryFromBytes, U
 
 use crate::{
   byml::{
-    ElementError, OpenError, Order, StringReadError, StringTableError,
+    ElementReadError, OpenError, Order, StringReadError, StringTableError,
     array_error::ContainerError,
     types::{ContainerHeader, DataType, DictEntry, Header, TryDictEntry},
   },
@@ -62,13 +62,13 @@ impl<'a, O: ByteOrder> StringTable<'a, O> {
   }
 }
 
-pub enum BymlContainer<'a, O: ByteOrder> {
-  Array(BymlArrayIter<'a, O>),
-  Dictionary(BymlDictIter<'a, O>),
+pub enum BymlReader<'a, O: ByteOrder> {
+  Array(BymlReaderArray<'a, O>),
+  Dictionary(BymlReaderDict<'a, O>),
   Empty,
 }
 
-impl<'a, O: ByteOrder> BymlContainer<'a, O> {
+impl<'a, O: ByteOrder> BymlReader<'a, O> {
   pub fn new(data: &'a [u8]) -> Result<Self, OpenError> {
     let header = data
       .get(..size_of::<Header<O>>())
@@ -127,7 +127,7 @@ impl<'a, O: ByteOrder> BymlContainer<'a, O> {
 
     let root_node_offset = header.root_node_offset.get();
     let root_node_offset = if root_node_offset == 0 {
-      return Ok(BymlContainer::Empty);
+      return Ok(BymlReader::Empty);
     } else if align_up(root_node_offset, 4) == root_node_offset {
       root_node_offset
     } else {
@@ -152,13 +152,13 @@ impl<'a, O: ByteOrder> BymlContainer<'a, O> {
 
     match data_type {
       DataType::Array => {
-        let (data_types, values) = BymlArrayIter::get_components(
+        let (data_types, values) = BymlReaderArray::get_components(
           data,
           container_header.entries(),
           root_node_offset as usize,
         )
         .map_err(|error| OpenError::Container { error })?;
-        Ok(Self::Array(BymlArrayIter {
+        Ok(Self::Array(BymlReaderArray {
           data,
           string_table,
           hash_key_table,
@@ -168,7 +168,7 @@ impl<'a, O: ByteOrder> BymlContainer<'a, O> {
         }))
       }
       DataType::Dictionary => {
-        let (entries, hash_key_table) = BymlDictIter::<O>::get_components(
+        let (entries, hash_key_table) = BymlReaderDict::<O>::get_components(
           data,
           container_header.entries(),
           root_node_offset as usize,
@@ -176,7 +176,7 @@ impl<'a, O: ByteOrder> BymlContainer<'a, O> {
         )
         .map_err(|error| OpenError::Container { error })?;
 
-        Ok(BymlContainer::Dictionary(BymlDictIter {
+        Ok(BymlReader::Dictionary(BymlReaderDict {
           data,
           string_table,
           hash_key_table,
@@ -188,8 +188,8 @@ impl<'a, O: ByteOrder> BymlContainer<'a, O> {
     }
   }
 
-  pub fn unwrap_array(self) -> BymlArrayIter<'a, O> {
-    let BymlContainer::Array(array) = self else {
+  pub fn unwrap_array(self) -> BymlReaderArray<'a, O> {
+    let BymlReader::Array(array) = self else {
       panic!("unwrapped a non array type")
     };
 
@@ -197,7 +197,7 @@ impl<'a, O: ByteOrder> BymlContainer<'a, O> {
   }
 }
 
-pub struct BymlArrayIter<'a, O: ByteOrder> {
+pub struct BymlReaderArray<'a, O: ByteOrder> {
   data: &'a [u8],
   string_table: Option<StringTable<'a, O>>,
   hash_key_table: Option<StringTable<'a, O>>,
@@ -206,7 +206,7 @@ pub struct BymlArrayIter<'a, O: ByteOrder> {
   _p: PhantomData<O>,
 }
 
-impl<'a, O: ByteOrder> BymlArrayIter<'a, O> {
+impl<'a, O: ByteOrder> BymlReaderArray<'a, O> {
   fn get_components(
     data: &[u8],
     entries: u32,
@@ -250,18 +250,21 @@ impl<'a, O: ByteOrder> BymlArrayIter<'a, O> {
     Ok((data_types, values))
   }
 
-  pub fn get_element(&'a self, index: u32) -> Result<Option<BymlElement<'a, O>>, ElementError> {
+  pub fn get_element(
+    &'a self,
+    index: u32,
+  ) -> Result<Option<BymlReaderNode<'a, O>>, ElementReadError> {
     let Some(data_type) = self.data_types.get(index as usize) else {
       return Ok(None);
     };
 
     let value = self.values.get(index as usize).unwrap().get();
 
-    let read_from_pointer = |size: usize| -> Result<&[u8], ElementError> {
+    let read_from_pointer = |size: usize| -> Result<&[u8], ElementReadError> {
       self
         .data
         .get(value as usize..(value as usize + size))
-        .ok_or(ElementError::ValueOutOfBounds {
+        .ok_or(ElementReadError::ValueOutOfBounds {
           size: self.data.len(),
           offset: value,
         })
@@ -272,21 +275,21 @@ impl<'a, O: ByteOrder> BymlArrayIter<'a, O> {
         let string = self
           .string_table
           .as_ref()
-          .ok_or(ElementError::NoStringTable)?
+          .ok_or(ElementReadError::NoStringTable)?
           .read_string(value)
-          .map_err(|error| ElementError::StringReadError { error })?;
+          .map_err(|error| ElementReadError::StringReadError { error })?;
 
-        Ok(Some(BymlElement::<O>::String(string)))
+        Ok(Some(BymlReaderNode::<O>::String(string)))
       }
       DataType::Array => {
         let container_header =
           ContainerHeader::<O>::read_from_bytes(read_from_pointer(4)?).unwrap();
 
         let (data_types, values) =
-          BymlArrayIter::get_components(self.data, container_header.entries(), value as usize)
-            .map_err(|error| ElementError::Array { error })?;
+          BymlReaderArray::get_components(self.data, container_header.entries(), value as usize)
+            .map_err(|error| ElementReadError::Array { error })?;
 
-        Ok(Some(BymlElement::Array(BymlArrayIter {
+        Ok(Some(BymlReaderNode::Array(BymlReaderArray {
           data: self.data,
           string_table: self.string_table,
           hash_key_table: self.hash_key_table,
@@ -299,15 +302,15 @@ impl<'a, O: ByteOrder> BymlArrayIter<'a, O> {
         let container_header =
           ContainerHeader::<O>::read_from_bytes(read_from_pointer(4)?).unwrap();
 
-        let (entries, hash_key_table) = BymlDictIter::<O>::get_components(
+        let (entries, hash_key_table) = BymlReaderDict::<O>::get_components(
           self.data,
           container_header.entries(),
           value as usize,
           self.hash_key_table.as_ref(),
         )
-        .map_err(|error| ElementError::Array { error })?;
+        .map_err(|error| ElementReadError::Array { error })?;
 
-        Ok(Some(BymlElement::Dict(BymlDictIter {
+        Ok(Some(BymlReaderNode::Dictionary(BymlReaderDict {
           data: self.data,
           string_table: self.string_table,
           hash_key_table: hash_key_table,
@@ -315,51 +318,51 @@ impl<'a, O: ByteOrder> BymlArrayIter<'a, O> {
           _p: PhantomData,
         })))
       }
-      DataType::StringTable => Err(ElementError::UnexpectedStringTable),
-      DataType::Bool => Ok(Some(BymlElement::<O>::Bool(value > 0))),
-      DataType::I32 => Ok(Some(BymlElement::<O>::I32(i32::from_ne_bytes(
+      DataType::StringTable => Err(ElementReadError::UnexpectedStringTable),
+      DataType::Bool => Ok(Some(BymlReaderNode::<O>::Bool(value > 0))),
+      DataType::I32 => Ok(Some(BymlReaderNode::<O>::I32(i32::from_ne_bytes(
         value.to_ne_bytes(),
       )))),
-      DataType::F32 => Ok(Some(BymlElement::<O>::F32(f32::from_ne_bytes(
+      DataType::F32 => Ok(Some(BymlReaderNode::<O>::F32(f32::from_ne_bytes(
         value.to_ne_bytes(),
       )))),
-      DataType::U32 => Ok(Some(BymlElement::<O>::U32(u32::from_ne_bytes(
+      DataType::U32 => Ok(Some(BymlReaderNode::<O>::U32(u32::from_ne_bytes(
         value.to_ne_bytes(),
       )))),
       DataType::I64 => {
         let value = read_from_pointer(8)?;
         let value = I64::<O>::read_from_bytes(value).unwrap();
 
-        Ok(Some(BymlElement::<O>::I64(value.get())))
+        Ok(Some(BymlReaderNode::<O>::I64(value.get())))
       }
       DataType::U64 => {
         let value = read_from_pointer(8)?;
         let value = U64::<O>::read_from_bytes(value).unwrap();
 
-        Ok(Some(BymlElement::<O>::U64(value.get())))
+        Ok(Some(BymlReaderNode::<O>::U64(value.get())))
       }
       DataType::F64 => {
         let value = read_from_pointer(8)?;
         let value = F64::<O>::read_from_bytes(value).unwrap();
 
-        Ok(Some(BymlElement::<O>::F64(value.get())))
+        Ok(Some(BymlReaderNode::<O>::F64(value.get())))
       }
-      DataType::Null => Ok(Some(BymlElement::Null)),
+      DataType::Null => Ok(Some(BymlReaderNode::Null)),
     }
   }
 
-  pub fn values(&'_ self) -> impl Iterator<Item = Result<BymlElement<'_, O>, ElementError>> {
+  pub fn values(&'_ self) -> impl Iterator<Item = Result<BymlReaderNode<'_, O>, ElementReadError>> {
     (0..self.data_types.len()).map(|index| self.get_element(index as u32).transpose().unwrap())
   }
 }
 
-impl<'a, O: ByteOrder> Debug for BymlArrayIter<'a, O> {
+impl<'a, O: ByteOrder> Debug for BymlReaderArray<'a, O> {
   fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
     self.values().collect::<Result<Vec<_>, _>>().fmt(f)
   }
 }
 
-pub struct BymlDictIter<'a, O: ByteOrder> {
+pub struct BymlReaderDict<'a, O: ByteOrder> {
   data: &'a [u8],
   string_table: Option<StringTable<'a, O>>,
   hash_key_table: StringTable<'a, O>,
@@ -367,7 +370,7 @@ pub struct BymlDictIter<'a, O: ByteOrder> {
   _p: PhantomData<O>,
 }
 
-impl<'a, O: ByteOrder> BymlDictIter<'a, O> {
+impl<'a, O: ByteOrder> BymlReaderDict<'a, O> {
   fn get_components(
     data: &'a [u8],
     entries: u32,
@@ -410,8 +413,26 @@ impl<'a, O: ByteOrder> BymlDictIter<'a, O> {
 
   pub fn get_element(
     &'a self,
-    index: impl PartialOrd<&'a [u8]>,
-  ) -> Result<Option<BymlElement<'a, O>>, ElementError> {
+    index: &str,
+  ) -> Result<Option<BymlReaderNode<'a, O>>, ElementReadError> {
+    self.get_element_by_key_bytes(index.as_bytes())
+  }
+
+  pub fn get_element_by_key_bytes(
+    &'a self,
+    index: &[u8],
+  ) -> Result<Option<BymlReaderNode<'a, O>>, ElementReadError> {
+    let Some((value, data_type)) = self.get_entry_by_key_bytes(index)? else {
+      return Ok(None);
+    };
+
+    self.get_element_from_entry(value, data_type)
+  }
+
+  fn get_entry_by_key_bytes(
+    &self,
+    index: &[u8],
+  ) -> Result<Option<(u32, DataType)>, ElementReadError> {
     // try_binary_search_by doesn't exist, unfortunately
     let mut low = 0;
     let mut high = self.entries.len() - 1;
@@ -423,9 +444,11 @@ impl<'a, O: ByteOrder> BymlDictIter<'a, O> {
       let value = self
         .hash_key_table
         .read_string(entry.hash_key_index())
-        .map_err(|error| ElementError::HashKeyReadError { error })?;
+        .map_err(|error| ElementReadError::HashKeyReadError { error })?;
 
-      let ordering = index.partial_cmp(&value.to_bytes()).expect("actually no");
+      let ordering = index
+        .partial_cmp(&value.to_bytes())
+        .expect("invalid partial comparison between two byte ");
       match ordering {
         std::cmp::Ordering::Less => {
           high = if let Some(new_high) = mid.checked_sub(1) {
@@ -442,26 +465,23 @@ impl<'a, O: ByteOrder> BymlDictIter<'a, O> {
       }
     }
 
-    let Some(DictEntry {
-      data_type, value, ..
-    }) = found_entry
-    else {
-      return Ok(None);
-    };
-
-    self.get_element_from_entry(value.get(), *data_type)
+    Ok(found_entry.map(
+      |DictEntry {
+         data_type, value, ..
+       }| (value.get(), *data_type),
+    ))
   }
 
   fn get_element_from_entry(
     &'_ self,
     value: u32,
     data_type: DataType,
-  ) -> Result<Option<BymlElement<'_, O>>, ElementError> {
-    let read_from_pointer = |size: usize| -> Result<&[u8], ElementError> {
+  ) -> Result<Option<BymlReaderNode<'_, O>>, ElementReadError> {
+    let read_from_pointer = |size: usize| -> Result<&[u8], ElementReadError> {
       self
         .data
         .get(value as usize..(value as usize + size))
-        .ok_or(ElementError::ValueOutOfBounds {
+        .ok_or(ElementReadError::ValueOutOfBounds {
           size: self.data.len(),
           offset: value,
         })
@@ -472,21 +492,21 @@ impl<'a, O: ByteOrder> BymlDictIter<'a, O> {
         let string = self
           .string_table
           .as_ref()
-          .ok_or(ElementError::NoStringTable)?
+          .ok_or(ElementReadError::NoStringTable)?
           .read_string(value)
-          .map_err(|error| ElementError::StringReadError { error })?;
+          .map_err(|error| ElementReadError::StringReadError { error })?;
 
-        Ok(Some(BymlElement::<O>::String(string)))
+        Ok(Some(BymlReaderNode::<O>::String(string)))
       }
       DataType::Array => {
         let container_header =
           ContainerHeader::<O>::read_from_bytes(read_from_pointer(4)?).unwrap();
 
         let (data_types, values) =
-          BymlArrayIter::get_components(self.data, container_header.entries(), value as usize)
-            .map_err(|error| ElementError::Array { error })?;
+          BymlReaderArray::get_components(self.data, container_header.entries(), value as usize)
+            .map_err(|error| ElementReadError::Array { error })?;
 
-        Ok(Some(BymlElement::Array(BymlArrayIter {
+        Ok(Some(BymlReaderNode::Array(BymlReaderArray {
           data: self.data,
           string_table: self.string_table,
           hash_key_table: Some(self.hash_key_table),
@@ -499,15 +519,15 @@ impl<'a, O: ByteOrder> BymlDictIter<'a, O> {
         let container_header =
           ContainerHeader::<O>::read_from_bytes(read_from_pointer(4)?).unwrap();
 
-        let (entries, _) = BymlDictIter::<O>::get_components(
+        let (entries, _) = BymlReaderDict::<O>::get_components(
           self.data,
           container_header.entries(),
           value as usize,
           Some(&self.hash_key_table),
         )
-        .map_err(|error| ElementError::Array { error })?;
+        .map_err(|error| ElementReadError::Array { error })?;
 
-        Ok(Some(BymlElement::Dict(BymlDictIter {
+        Ok(Some(BymlReaderNode::Dictionary(BymlReaderDict {
           data: self.data,
           string_table: self.string_table,
           hash_key_table: self.hash_key_table,
@@ -515,67 +535,157 @@ impl<'a, O: ByteOrder> BymlDictIter<'a, O> {
           _p: PhantomData,
         })))
       }
-      DataType::StringTable => Err(ElementError::UnexpectedStringTable),
-      DataType::Bool => Ok(Some(BymlElement::<O>::Bool(value > 0))),
-      DataType::I32 => Ok(Some(BymlElement::<O>::I32(i32::from_ne_bytes(
+      DataType::StringTable => Err(ElementReadError::UnexpectedStringTable),
+      DataType::Bool => Ok(Some(BymlReaderNode::<O>::Bool(value > 0))),
+      DataType::I32 => Ok(Some(BymlReaderNode::<O>::I32(i32::from_ne_bytes(
         value.to_ne_bytes(),
       )))),
-      DataType::F32 => Ok(Some(BymlElement::<O>::F32(f32::from_ne_bytes(
+      DataType::F32 => Ok(Some(BymlReaderNode::<O>::F32(f32::from_ne_bytes(
         value.to_ne_bytes(),
       )))),
-      DataType::U32 => Ok(Some(BymlElement::<O>::U32(u32::from_ne_bytes(
+      DataType::U32 => Ok(Some(BymlReaderNode::<O>::U32(u32::from_ne_bytes(
         value.to_ne_bytes(),
       )))),
       DataType::I64 => {
         let value = read_from_pointer(8)?;
         let value = I64::<O>::read_from_bytes(value).unwrap();
 
-        Ok(Some(BymlElement::<O>::I64(value.get())))
+        Ok(Some(BymlReaderNode::<O>::I64(value.get())))
       }
       DataType::U64 => {
         let value = read_from_pointer(8)?;
         let value = U64::<O>::read_from_bytes(value).unwrap();
 
-        Ok(Some(BymlElement::<O>::U64(value.get())))
+        Ok(Some(BymlReaderNode::<O>::U64(value.get())))
       }
       DataType::F64 => {
         let value = read_from_pointer(8)?;
         let value = F64::<O>::read_from_bytes(value).unwrap();
 
-        Ok(Some(BymlElement::<O>::F64(value.get())))
+        Ok(Some(BymlReaderNode::<O>::F64(value.get())))
       }
-      DataType::Null => Ok(Some(BymlElement::Null)),
+      DataType::Null => Ok(Some(BymlReaderNode::Null)),
     }
   }
 
-  pub fn keys(&self) -> impl Iterator<Item = Result<&CStr, StringReadError>> {
+  pub fn cstr_keys(&self) -> impl Iterator<Item = Result<&CStr, StringReadError>> {
     self
       .entries
       .iter()
       .map(|entry| self.hash_key_table.read_string(entry.hash_key_index()))
   }
 
-  pub fn entries(&self) -> impl Iterator<Item = Result<(&CStr, BymlElement<'_, O>), ElementError>> {
-    (0..self.entries.len()).map(|index| -> Result<_, ElementError> {
+  pub fn keys(&self) -> impl Iterator<Item = Result<&str, StringReadError>> {
+    self.entries.iter().map(|entry| {
+      self
+        .hash_key_table
+        .read_string(entry.hash_key_index())
+        .and_then(|value| {
+          value
+            .to_str()
+            .map_err(|error| StringReadError::NonUtf8String { error })
+        })
+    })
+  }
+
+  pub fn cstr_entries(
+    &self,
+  ) -> impl Iterator<Item = Result<(&CStr, BymlReaderNode<'_, O>), ElementReadError>> {
+    (0..self.entries.len()).map(|index| -> Result<_, ElementReadError> {
       let string = self
         .hash_key_table
         .read_string(self.entries[index].hash_key_index())
-        .map_err(|error| ElementError::HashKeyReadError { error })?;
-      Ok((string, self.get_element(string.to_bytes())?.unwrap()))
+        .map_err(|error| ElementReadError::HashKeyReadError { error })?;
+      Ok((
+        string,
+        self.get_element_by_key_bytes(string.to_bytes())?.unwrap(),
+      ))
     })
+  }
+
+  pub fn entries(
+    &self,
+  ) -> impl Iterator<Item = Result<(&str, BymlReaderNode<'_, O>), ElementReadError>> {
+    (0..self.entries.len()).map(|index| -> Result<_, ElementReadError> {
+      let string = self
+        .hash_key_table
+        .read_string(self.entries[index].hash_key_index())
+        .map_err(|error| ElementReadError::HashKeyReadError { error })?;
+      let string = string
+        .to_str()
+        .map_err(|error| ElementReadError::NonUtf8String { error })?;
+      Ok((
+        string,
+        self.get_element_by_key_bytes(string.as_bytes())?.unwrap(),
+      ))
+    })
+  }
+
+  pub fn get_string(&'a self, key: &str) -> Result<Option<&'a str>, ElementReadError> {
+    let Some(value) = self.get_cstring(key)? else {
+      return Ok(None);
+    };
+
+    value
+      .to_str()
+      .map(Some)
+      .map_err(|error| ElementReadError::NonUtf8String { error })
+  }
+
+  pub fn get_type(&self, key: &str) -> Result<Option<DataType>, ElementReadError> {
+    self
+      .get_entry_by_key_bytes(key.as_bytes())
+      .map(|value| value.map(|(_, data_type)| data_type))
   }
 }
 
-impl<'a, O: ByteOrder> Debug for BymlDictIter<'a, O> {
+macro_rules! getter_impls {
+
+  (
+    [$ty: ty, $param: ident: $param_ty: ty]
+    $(($func: ident, $ret_ty: ty, $variant: ident)),*
+  ) => {
+    impl<'a, O: ByteOrder> $ty {
+      $(
+        pub fn $func(&'a self, $param: $param_ty) -> Result<Option<$ret_ty>, ElementReadError> {
+          match self.get_element($param)? {
+            Some(BymlReaderNode::$variant(value)) => Ok(Some(value)),
+            Some(element) => Err(ElementReadError::UnexpectedDataType {
+              expected: DataType::$variant,
+              actual: element.data_type()
+            }),
+            None => Ok(None)
+          }
+        }
+      )*
+    }
+  };
+}
+
+getter_impls! {
+  [BymlReaderDict<'a, O>, key: &'_ str]
+  (get_array, BymlReaderArray<'a, O>, Array),
+  (get_dict, BymlReaderDict<'a, O>, Dictionary),
+  (get_bool, bool, Bool),
+  (get_i32, i32, I32),
+  (get_u32, u32, U32),
+  (get_f32, f32, F32),
+  (get_i64, i64, I64),
+  (get_u64, u64, U64),
+  (get_f64, f64, F64),
+  (get_cstring, &'a CStr, String)
+}
+
+impl<'a, O: ByteOrder> Debug for BymlReaderDict<'a, O> {
   fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
     self.entries().collect::<Result<Vec<_>, _>>().fmt(f)
   }
 }
 
 #[derive(Debug)]
-pub enum BymlElement<'a, O: ByteOrder> {
-  Array(BymlArrayIter<'a, O>),
-  Dict(BymlDictIter<'a, O>),
+pub enum BymlReaderNode<'a, O: ByteOrder> {
+  Array(BymlReaderArray<'a, O>),
+  Dictionary(BymlReaderDict<'a, O>),
   Bool(bool),
   I32(i32),
   F32(f32),
@@ -585,4 +695,22 @@ pub enum BymlElement<'a, O: ByteOrder> {
   F64(f64),
   String(&'a CStr),
   Null,
+}
+
+impl<'a, O: ByteOrder> BymlReaderNode<'a, O> {
+  fn data_type(&self) -> DataType {
+    match self {
+      BymlReaderNode::Array(_) => DataType::Array,
+      BymlReaderNode::Dictionary(_) => DataType::Dictionary,
+      BymlReaderNode::Bool(_) => DataType::Bool,
+      BymlReaderNode::I32(_) => DataType::I32,
+      BymlReaderNode::F32(_) => DataType::F32,
+      BymlReaderNode::U32(_) => DataType::U32,
+      BymlReaderNode::I64(_) => DataType::I64,
+      BymlReaderNode::U64(_) => DataType::U64,
+      BymlReaderNode::F64(_) => DataType::F64,
+      BymlReaderNode::String(_) => DataType::String,
+      BymlReaderNode::Null => DataType::Null,
+    }
+  }
 }

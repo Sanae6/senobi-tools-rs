@@ -1,5 +1,6 @@
-pub mod iter;
+pub mod reader;
 mod types;
+pub mod writer;
 
 pub const MAXIMUM_SUPPORTED_VERSION: u16 = 3;
 
@@ -90,24 +91,34 @@ mod open_error {
 
 use string_read_error::StringReadError;
 mod string_read_error {
+  use std::str::Utf8Error;
+
   use snafu::Snafu;
 
   #[derive(Snafu, Debug)]
   pub enum StringReadError {
-    OffsetEntryOutOfBounds { offset: u32 },
+    OffsetEntryOutOfBounds {
+      offset: u32,
+    },
     OffsetOutsideOfStringData,
     UnterminatedString,
+    #[snafu(display("{error}"))]
+    NonUtf8String {
+      error: Utf8Error,
+    },
   }
 }
 
-use element_error::ElementError;
+use element_error::ElementReadError;
 mod element_error {
+  use std::str::Utf8Error;
+
   use snafu::Snafu;
 
   use crate::byml::{StringReadError, array_error::ContainerError, types::DataType};
 
   #[derive(Snafu, Debug)]
-  pub enum ElementError {
+  pub enum ElementReadError {
     #[snafu(display("failed to retrieve string: {error}"))]
     StringReadError { error: StringReadError },
     #[snafu(display("no string table when string was requested"))]
@@ -131,5 +142,7 @@ mod element_error {
     Array { error: ContainerError },
     #[snafu(display("failed to retrieve string: {error}"))]
     HashKeyReadError { error: StringReadError },
+    #[snafu(display("{error}"))]
+    NonUtf8String { error: Utf8Error },
   }
 }

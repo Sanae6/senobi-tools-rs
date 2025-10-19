@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use num_derive::FromPrimitive;
 use zerocopy::{
-  ByteOrder, FromBytes, Immutable, IntoBytes, KnownLayout, TryFromBytes, U16, U32, Unaligned,
+  ByteOrder, FromBytes, Immutable, IntoBytes, KnownLayout, Order, TryFromBytes, U16, U32, Unaligned,
 };
 
 #[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
@@ -26,14 +26,35 @@ pub struct ContainerHeader<O: ByteOrder> {
 impl<O: ByteOrder> ContainerHeader<O> {
   pub fn entries(&self) -> u32 {
     match O::ORDER {
-      zerocopy::Order::BigEndian => {
+      Order::BigEndian => {
         let [a, b, c] = self.entries;
         u32::from_be_bytes([0, a, b, c])
       }
-      zerocopy::Order::LittleEndian => {
+      Order::LittleEndian => {
         let [a, b, c] = self.entries;
         u32::from_le_bytes([a, b, c, 0])
       }
+    }
+  }
+
+  pub fn new(data_type: DataType, entries: u32) -> Self {
+    if entries >= 2u32.pow(24) {
+      panic!("entries greater than u24")
+    }
+
+    Self {
+      data_type: data_type as _,
+      entries: match O::ORDER {
+        Order::BigEndian => {
+          let [_, a, b, c] = entries.to_be_bytes();
+          [a, b, c]
+        }
+        Order::LittleEndian => {
+          let [a, b, c, _] = entries.to_le_bytes();
+          [a, b, c]
+        }
+      },
+      _p: PhantomData,
     }
   }
 }
@@ -57,14 +78,35 @@ pub struct DictEntry<O: ByteOrder> {
 impl<O: ByteOrder> DictEntry<O> {
   pub fn hash_key_index(&self) -> u32 {
     match O::ORDER {
-      zerocopy::Order::BigEndian => {
+      Order::BigEndian => {
         let [a, b, c] = self.hash_key_index;
         u32::from_be_bytes([0, a, b, c])
       }
-      zerocopy::Order::LittleEndian => {
+      Order::LittleEndian => {
         let [a, b, c] = self.hash_key_index;
         u32::from_le_bytes([a, b, c, 0])
       }
+    }
+  }
+
+  pub fn new(data_type: DataType, hash_key_index: u32, value: u32) -> Self {
+    if hash_key_index >= 2u32.pow(24) {
+      panic!("hash key index greater than u24")
+    }
+
+    Self {
+      hash_key_index: match O::ORDER {
+        Order::BigEndian => {
+          let [_, a, b, c] = hash_key_index.to_be_bytes();
+          [a, b, c]
+        }
+        Order::LittleEndian => {
+          let [a, b, c, _] = hash_key_index.to_le_bytes();
+          [a, b, c]
+        }
+      },
+      data_type: data_type as _,
+      value: U32::new(value)
     }
   }
 }

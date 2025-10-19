@@ -1,18 +1,26 @@
-use senobi_library::byml::{self, iter::BymlContainer};
+use std::{fs::{self, File}, io::Cursor};
+
+use senobi_library::byml::{self, reader::BymlReader, writer::{BymlWriter, BymlWriterDict}};
 use zerocopy::LittleEndian;
 
 fn main() {
   let slice = include_bytes!("./Bed.byml");
-  let BymlContainer::Dictionary(dict) =
-    byml::iter::BymlContainer::<LittleEndian>::new(slice).unwrap()
+  let BymlReader::Dictionary(dict) = byml::reader::BymlReader::<LittleEndian>::new(slice).unwrap()
   else {
     panic!()
   };
 
-  let element = dict
-    .get_element("UnitConfigName".as_bytes())
-    .unwrap()
-    .unwrap();
-  println!("{element:?}");
-  println!("{dict:?}");
+  let element = dict.get_string("UnitConfigName").unwrap().unwrap();
+  // println!("{element:?}");
+  // println!("{dict:?}");
+  
+  let mut dict = BymlWriterDict::new();
+  dict.insert_string("hello", "world");
+  let dict = BymlWriter::from_dictionary(dict);
+  let mut data = Vec::new();
+  let mut writer = Cursor::new(&mut data);
+  dict.write::<LittleEndian>(&mut writer, byml::writer::Version::V3).unwrap();
+  fs::write("target/my_awesome.byml", &data).unwrap();
+  let BymlReader::Dictionary(dict) = BymlReader::<LittleEndian>::new(&data).unwrap() else { panic!()};
+  println!("{}", dict.get_string("hello").unwrap().unwrap())
 }
