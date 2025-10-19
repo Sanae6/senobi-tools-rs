@@ -1,18 +1,21 @@
 use std::{
-  collections::{BTreeMap, HashMap, HashSet, btree_map::Entry},
+  collections::{BTreeMap, HashMap, HashSet},
   ffi::CString,
+  hash::{BuildHasherDefault, DefaultHasher},
   io::{self, Seek, SeekFrom, Write},
-  marker::PhantomData,
   ops::{Deref, DerefMut},
   rc::Rc,
 };
 
 use either::Either;
 use ordered_float::OrderedFloat;
-use zerocopy::{ByteOrder, F64, I16, I64, Immutable, IntoByteSlice, IntoBytes, U16, U32, U64};
+use zerocopy::{ByteOrder, F64, I64, Immutable, IntoBytes, U16, U32, U64};
 
 use crate::{
-  byml::types::{ContainerHeader, DataType, DictEntry, Header},
+  byml::{
+    types::{ContainerHeader, DataType, DictEntry, Header},
+    write_error::{Overflowed, WriteError},
+  },
   util::align_up,
 };
 
@@ -38,8 +41,12 @@ impl BymlWriterArray {
     self.elements.push(BymlWriterNode::Null);
   }
 
-  fn inline_size<O: ByteOrder>(&self) -> usize {
-    size_of::<ContainerHeader<O>>() + align_up(self.len(), 4) + align_up(self.len() * 4, 4)
+  fn inline_size<O: ByteOrder>(&self) -> Option<u32> {
+    size_of::<ContainerHeader<O>>()
+      .checked_add(align_up(self.len(), 4))?
+      .checked_add(align_up(self.len() * 4, 4))?
+      .try_into()
+      .ok()
   }
 }
 
@@ -124,8 +131,11 @@ impl BymlWriterDict {
     );
   }
 
-  fn inline_size<O: ByteOrder>(&self) -> usize {
-    size_of::<ContainerHeader<O>>() + align_up(self.len() * 8, 4)
+  fn inline_size<O: ByteOrder>(&self) -> Option<u32> {
+    size_of::<ContainerHeader<O>>()
+      .checked_add(align_up(self.len() * size_of::<DictEntry<O>>(), 4))?
+      .try_into()
+      .ok()
   }
 }
 
@@ -197,7 +207,7 @@ enum Container {
 }
 
 impl Container {
-  fn inline_size<O: ByteOrder>(&self) -> usize {
+  fn inline_size<O: ByteOrder>(&self) -> Option<u32> {
     match self {
       Container::Array(byml_writer_array) => byml_writer_array.inline_size::<O>(),
       Container::Dictionary(byml_writer_dict) => byml_writer_dict.inline_size::<O>(),
@@ -211,9 +221,11 @@ pub enum Version {
   V3,
 }
 
+type HashState = BuildHasherDefault<DefaultHasher>;
+
 pub struct BymlWriter {
   container: Container,
-  containers: HashSet<Container>,
+  containers: HashSet<Container, HashState>,
 }
 
 impl BymlWriter {
@@ -226,9 +238,11 @@ impl BymlWriter {
   }
 
   fn new(container: Container) -> Self {
-    let mut containers = HashSet::new();
+    let mut containers = HashSet::default();
+
     let mut stack = Vec::new();
     stack.push(container.clone());
+
     while let Some(container) = stack.pop() {
       containers.insert(container.clone());
 
@@ -252,25 +266,36 @@ impl BymlWriter {
     }
   }
 
-  fn traverse_containers<'a>(&'a self, mut func: impl FnMut(&'a Container)) {
+  fn traverse_containers<'a>(
+    &'a self,
+    mut func: impl FnMut(&'a Container) -> Result<(), WriteError>,
+  ) -> Result<(), WriteError> {
     for ele in &self.containers {
-      func(ele);
+      func(ele)?;
     }
+
+    Ok(())
   }
 
   // todo: panic handling for arithmetic
-  pub fn write<O: ByteOrder>(&self, mut writer: impl Write + Seek, version: Version) -> io::Result<()> {
-    let mut strings: HashSet<&CString> = HashSet::new();
-    let mut keys: HashSet<&CString> = HashSet::new();
-    let mut data_size = 0;
-    let mut container_offset = 0;
-    let mut containers: HashMap<&Container, u32> = HashMap::new();
-    
+  pub fn write<O: ByteOrder>(
+    &self,
+    mut writer: impl Write + Seek,
+    version: Version,
+  ) -> Result<(), WriteError> {
+    let mut strings: HashSet<&CString, HashState> = HashSet::default();
+    let mut keys: HashSet<&CString, HashState> = HashSet::default();
+    let mut data_size = 0u32;
+    let mut container_offset = 0u32;
+    let mut containers: HashMap<&Container, u32, HashState> = HashMap::default();
+
     self.traverse_containers(|cont| {
       containers.insert(cont, container_offset);
-      let inline_size = align_up(cont.inline_size::<O>(), 4);
-      container_offset += inline_size as u32;
-      data_size += inline_size;
+      let inline_size = align_up(cont.inline_size::<O>().ok_or(Overflowed)?, 4);
+      container_offset = container_offset
+        .checked_add(inline_size as u32)
+        .ok_or(Overflowed)?;
+      data_size = data_size.checked_add(inline_size).ok_or(Overflowed)?;
       let iter = match cont {
         Container::Array(array) => {
           Either::Left(array.iter().map(|value| (None::<&CString>, value)))
@@ -289,39 +314,74 @@ impl BymlWriter {
             strings.insert(string);
           }
           BymlWriterNode::I64(_) | BymlWriterNode::U64(_) | BymlWriterNode::F64(_) => {
-            data_size += 8;
+            data_size = data_size.checked_add(8).ok_or(Overflowed)?;
           }
           _ => {}
         }
       }
-    });
+
+      Ok(())
+    })?;
 
     let strings_len = align_up(
       strings
         .iter()
         .map(|string| string.as_bytes_with_nul().len())
-        .sum(),
+        .try_fold(0usize, |a, b| a.checked_add(b))
+        .ok_or(Overflowed)?,
       4,
     );
     let keys_len = align_up(
-      keys.iter().map(|key| key.as_bytes_with_nul().len()).sum(),
+      keys
+        .iter()
+        .map(|key| key.as_bytes_with_nul().len())
+        .try_fold(0usize, |a, b| a.checked_add(b))
+        .ok_or(Overflowed)?,
       4,
     );
 
-    let hash_key_offset = size_of::<Header<O>>();
+    let calc_table_total = |table: &HashSet<_, _>, table_len: u32| -> Result<u32, Overflowed> {
+      Ok(align_up(
+        (size_of::<ContainerHeader<O>>() as u32)
+          .checked_add(align_up(
+            u32::try_from(table.len())
+              .map_err(|_| Overflowed)?
+              .checked_add(1)
+              .ok_or(Overflowed)?
+              .checked_mul(4)
+              .ok_or(Overflowed)?,
+            4,
+          ))
+          .ok_or(Overflowed)?
+          .checked_add(table_len)
+          .ok_or(Overflowed)?,
+        4,
+      ))
+    };
+    let hash_key_offset = size_of::<Header<O>>() as u32;
     let keys_total = if keys.is_empty() {
       0
     } else {
-      align_up(size_of::<ContainerHeader<O>>() + align_up((keys.len() + 1) * 4, 4) + keys_len, 4)
+      calc_table_total(&keys, u32::try_from(keys_len).map_err(|_| Overflowed)?)?
     };
     let string_table_offset = hash_key_offset + keys_total;
     let strings_total = if strings.is_empty() {
       0
     } else {
-      align_up(size_of::<ContainerHeader<O>>() + align_up((strings.len() + 1) * 4, 4) + strings_len, 4)
+      calc_table_total(
+        &strings,
+        u32::try_from(strings_len).map_err(|_| Overflowed)?,
+      )?
     };
 
-    let root_node_offset = align_up(string_table_offset + strings_total, 4);
+    let nodes_start_offset: u32 = align_up(
+      string_table_offset
+        .checked_add(strings_total)
+        .ok_or(Overflowed)?,
+      4,
+    )
+    .try_into()
+    .map_err(|_| Overflowed)?;
 
     let header = Header::<O> {
       magic: match O::ORDER {
@@ -334,118 +394,47 @@ impl BymlWriter {
       }),
       hash_key_offset: U32::<O>::new(hash_key_offset as _),
       string_table_offset: U32::<O>::new(string_table_offset as _),
-      root_node_offset: U32::<O>::new(root_node_offset as _),
+      root_node_offset: U32::<O>::new(
+        (nodes_start_offset as u32)
+          .checked_add(*containers.get(&self.container).unwrap())
+          .ok_or(Overflowed)?,
+      ),
     };
 
-    fn write_string_table<'a, O: ByteOrder>(
-      table: HashSet<&'a CString>,
-      writer: &mut (impl Write + Seek),
-    ) -> Result<BTreeMap<&'a CString, u32>, io::Error> {
-      let mut offset = size_of::<ContainerHeader<O>>() + align_up((table.len() + 1) * 4, 4);
-      let mut offsets = Vec::with_capacity(align_up(table.len() + 1, 4));
-
-      let table = table
-        .into_iter()
-        .enumerate()
-        .map(|(index, value)| {
-          let current_offset = offset;
-          offsets.push(current_offset as u32);
-          offset += value.as_bytes_with_nul().len();
-          (value, index as _)
-        })
-        .collect::<BTreeMap<_, _>>();
-      offsets.push((offset - 1) as u32);
-
-      let header = ContainerHeader::<O>::new(DataType::StringTable, table.len() as u32);
-      writer.write_all(header.as_bytes())?;
-      writer.write_all(offsets.as_bytes())?;
-      for (key, _index) in &table {
-        writer.write_all(key.as_bytes_with_nul())?;
-      }
-
-      Ok(table)
-    }
-
     writer.write_all(header.as_bytes())?;
-    let keys = write_string_table::<O>(keys, &mut writer)?;
+    let keys = Self::write_string_table::<O>(keys, &mut writer)?;
     writer.seek(SeekFrom::Start(string_table_offset as u64))?;
-    let strings = write_string_table::<O>(strings, &mut writer)?;
-    writer.seek(SeekFrom::Start(root_node_offset as u64))?;
+    let strings = Self::write_string_table::<O>(strings, &mut writer)?;
+    writer.seek(SeekFrom::Start(nodes_start_offset as u64))?;
 
-    let mut long_offset = root_node_offset as u32 + container_offset;
+    let mut long_offset = nodes_start_offset
+      .checked_add(container_offset)
+      .ok_or(Overflowed)?;
     let mut element_types: Vec<DataType> = Vec::new();
     let mut element_values: Vec<u32> = Vec::new();
     for cont in &self.containers {
       let container_offset = containers
         .get(&cont)
         .expect("missed reference during container ingest");
-      writer.seek(io::SeekFrom::Start(root_node_offset as u64 + *container_offset as u64))?;
+      writer.seek(io::SeekFrom::Start(
+        nodes_start_offset
+          .checked_add(*container_offset)
+          .ok_or(Overflowed)? as u64,
+      ))?;
 
-      fn write_long<T: IntoBytes + Immutable>(
-        writer: &mut (impl Write + Seek),
-        long_offset: &mut u32,
-        value: T,
-      ) -> io::Result<u32> {
-        let position = writer.stream_position()?;
-        let offset = writer.seek(SeekFrom::Start(*long_offset as u64))?;
-        *long_offset += value.as_bytes().len() as u32;
-        writer.write_all(value.as_bytes())?;
-        writer.seek(SeekFrom::Start(position))?;
-        Ok(offset as u32)
-      }
-
-      fn get_value<O: ByteOrder>(
-        containers: &HashMap<&Container, u32>,
-        writer: &mut (impl Write + Seek),
-        long_offset: &mut u32,
-        strings: &BTreeMap<&CString, u32>,
-        ele: &BymlWriterNode,
-      ) -> io::Result<u32> {
-        let value = match ele {
-          BymlWriterNode::Array(array) => *containers
-            .get(&Container::Array(array.clone()))
-            .expect("missed reference during container ingest"),
-          BymlWriterNode::Dictionary(dict) => *containers
-            .get(&Container::Dictionary(dict.clone()))
-            .expect("missed reference during container ingest"),
-          BymlWriterNode::Bool(value) => {
-            if *value {
-              1
-            } else {
-              0
-            }
-          }
-          BymlWriterNode::I32(value) => value.cast_unsigned(),
-          BymlWriterNode::F32(value) => u32::from_ne_bytes(value.to_ne_bytes()),
-          BymlWriterNode::U32(value) => *value,
-          BymlWriterNode::I64(value) => {
-            write_long::<I64<O>>(writer, long_offset, I64::new(*value))?
-          }
-          BymlWriterNode::U64(value) => {
-            write_long::<U64<O>>(writer, long_offset, U64::new(*value))?
-          }
-          BymlWriterNode::F64(value) => {
-            write_long::<F64<O>>(writer, long_offset, F64::new(**value))?
-          }
-          BymlWriterNode::String(cstring) => *strings
-            .get(cstring)
-            .expect("missed string during string ingest"),
-          BymlWriterNode::Null => 0,
-        };
-
-        Ok(value)
-      }
       match cont {
         Container::Array(array) => {
-          let header = ContainerHeader::<O>::new(DataType::Array, array.len() as u32);
+          let header =
+            ContainerHeader::<O>::new(DataType::Array, array.len() as u32).ok_or(Overflowed)?;
           element_types.clear();
           element_values.clear();
 
           for element in array.iter() {
             element_types.push(element.data_type());
-            element_values.push(get_value::<O>(
+            element_values.push(Self::get_value::<O>(
               &containers,
               &mut writer,
+              nodes_start_offset as u32,
               &mut long_offset,
               &strings,
               element,
@@ -454,27 +443,134 @@ impl BymlWriter {
 
           writer.write_all(header.as_bytes())?;
           writer.write_all(element_types.as_bytes())?;
-          let extra = [0; 3];
-          writer.write_all(&extra[(element_types.len() % 4)..])?;
+          let align = 4 - (writer.stream_position()?.cast_signed() & 3);
+          writer.seek_relative(align)?;
           writer.write_all(element_values.as_bytes())?;
         }
         Container::Dictionary(dict) => {
-          let header = ContainerHeader::<O>::new(DataType::Dictionary, dict.len() as u32);
+          let header =
+            ContainerHeader::<O>::new(DataType::Dictionary, dict.len() as u32).ok_or(Overflowed)?;
           writer.write_all(header.as_bytes())?;
           for (key, element) in dict.iter() {
             let key = keys.get(key).expect("missed key in key ingest");
-            let value = get_value::<O>(
+            let value = Self::get_value::<O>(
               &containers,
               &mut writer,
+              nodes_start_offset as u32,
               &mut long_offset,
               &strings,
               &element,
             )?;
-            writer.write_all(DictEntry::<O>::new(element.data_type(), *key, value).as_bytes())?;
+            writer.write_all(
+              DictEntry::<O>::new(element.data_type(), *key, value)
+                .ok_or(Overflowed)?
+                .as_bytes(),
+            )?;
           }
         }
       }
     }
+
+    writer.flush()?;
+
     Ok(())
+  }
+
+  fn write_string_table<'a, O: ByteOrder>(
+    table: HashSet<&'a CString, HashState>,
+    writer: &mut (impl Write + Seek),
+  ) -> Result<BTreeMap<&'a CString, u32>, WriteError> {
+    let mut offset = size_of::<ContainerHeader<O>>() + align_up((table.len() + 1) * 4, 4);
+    let mut offsets = Vec::with_capacity(align_up(table.len() + 1, 4));
+    let mut table = table.into_iter().collect::<Vec<_>>();
+    table.sort();
+
+    let table = table
+      .into_iter()
+      .enumerate()
+      .map(|(index, value)| {
+        let current_offset = offset;
+        offsets.push(current_offset as u32);
+        offset += value.as_bytes_with_nul().len();
+        (value, index as _)
+      })
+      .collect::<BTreeMap<_, _>>();
+    offsets.push((offset - 1) as u32);
+
+    let header =
+      ContainerHeader::<O>::new(DataType::StringTable, table.len() as u32).ok_or(Overflowed)?;
+    writer.write_all(header.as_bytes())?;
+    writer.write_all(offsets.as_bytes())?;
+    for (key, _index) in &table {
+      writer.write_all(key.as_bytes_with_nul())?;
+    }
+
+    Ok(table)
+  }
+
+  fn write_long<T: IntoBytes + Immutable>(
+    writer: &mut (impl Write + Seek),
+    long_offset: &mut u32,
+    value: T,
+  ) -> Result<u32, WriteError> {
+    let position = writer.stream_position()?;
+    let offset = writer.seek(SeekFrom::Start(*long_offset as u64))?;
+    *long_offset = long_offset
+      .checked_add(value.as_bytes().len().try_into().map_err(|_| Overflowed)?)
+      .ok_or(Overflowed)?;
+    writer.write_all(value.as_bytes())?;
+    writer.seek(SeekFrom::Start(position))?;
+    Ok(offset as u32)
+  }
+
+  fn get_value<O: ByteOrder>(
+    containers: &HashMap<&Container, u32, HashState>,
+    writer: &mut (impl Write + Seek),
+    nodes_start_offset: u32,
+    long_offset: &mut u32,
+    strings: &BTreeMap<&CString, u32>,
+    ele: &BymlWriterNode,
+  ) -> Result<u32, WriteError> {
+    let value = match ele {
+      BymlWriterNode::Array(array) => nodes_start_offset
+        .checked_add(
+          *containers
+            .get(&Container::Array(array.clone()))
+            .expect("missed reference during container ingest"),
+        )
+        .ok_or(Overflowed)?,
+      BymlWriterNode::Dictionary(dict) => nodes_start_offset
+        .checked_add(
+          *containers
+            .get(&Container::Dictionary(dict.clone()))
+            .expect("missed reference during container ingest"),
+        )
+        .ok_or(Overflowed)?,
+      BymlWriterNode::Bool(value) => {
+        if *value {
+          1
+        } else {
+          0
+        }
+      }
+      BymlWriterNode::I32(value) => value.cast_unsigned(),
+      BymlWriterNode::F32(value) => u32::from_ne_bytes(value.to_ne_bytes()),
+      BymlWriterNode::U32(value) => *value,
+      BymlWriterNode::I64(value) => {
+        Self::write_long::<I64<O>>(writer, long_offset, I64::new(*value))?
+      }
+      BymlWriterNode::U64(value) => {
+        Self::write_long::<U64<O>>(writer, long_offset, U64::new(*value))?
+      }
+      BymlWriterNode::F64(value) => {
+        Self::write_long::<F64<O>>(writer, long_offset, F64::new(**value))?
+      }
+      BymlWriterNode::String(cstring) => *strings
+        .get(cstring)
+        .expect("missed string during string ingest"),
+      BymlWriterNode::Null => 0,
+    };
+
+    Ok(value)
   }
 }

@@ -1,6 +1,7 @@
-use std::{ffi::CStr, fmt::Debug, marker::PhantomData};
+use std::{backtrace::Backtrace, ffi::CStr, fmt::Debug, marker::PhantomData};
 
 use num_traits::FromPrimitive;
+use snafu::GenerateImplicitData;
 use zerocopy::{ByteOrder, F64, FromBytes, I64, Order as ZCOrder, TryFromBytes, U32, U64};
 
 use crate::{
@@ -28,6 +29,7 @@ impl<'a, O: ByteOrder> StringTable<'a, O> {
         .ok_or(StringTableError::HeaderOutOfBounds {
           size: data.len(),
           offset,
+          backtrace: Backtrace::generate(),
         })?;
     let header = ContainerHeader::<O>::read_from_bytes(header).unwrap();
     let entries = header.entries();
@@ -36,8 +38,10 @@ impl<'a, O: ByteOrder> StringTable<'a, O> {
       StringTableError::AddressTableOutOfBounds {
         size: data.len(),
         offset: offset + 4,
+        backtrace: Backtrace::generate(),
       },
     )?;
+
     let offset_table =
       <[U32<O>]>::ref_from_bytes_with_elems(offset_table, entries as usize).unwrap();
 
@@ -75,6 +79,7 @@ impl<'a, O: ByteOrder> BymlReader<'a, O> {
       .ok_or(OpenError::NotEnoughDataForHeader {
         size: data.len(),
         offset: 0,
+        backtrace: Backtrace::generate(),
       })?;
     let header = Header::<O>::ref_from_bytes(header).unwrap();
 
@@ -85,12 +90,14 @@ impl<'a, O: ByteOrder> BymlReader<'a, O> {
         return Err(OpenError::EndiannessMismatch {
           expected: Order::BigEndian,
           actual: Order::LittleEndian,
+          backtrace: Backtrace::generate(),
         });
       }
       (_, ZCOrder::LittleEndian) => {
         return Err(OpenError::EndiannessMismatch {
           expected: Order::LittleEndian,
           actual: Order::BigEndian,
+          backtrace: Backtrace::generate(),
         });
       }
     }
@@ -105,7 +112,7 @@ impl<'a, O: ByteOrder> BymlReader<'a, O> {
       } else if align_up(offset, 4) == offset {
         Ok(Some(
           StringTable::get_string_table(data, offset)
-            .map_err(|error| OpenError::StringTable { error })?,
+            .map_err(|source| OpenError::StringTable { source })?,
         ))
       } else {
         return Err(err());
@@ -116,12 +123,14 @@ impl<'a, O: ByteOrder> BymlReader<'a, O> {
       OpenError::StringTableMisaligned {
         size: data.len(),
         offset: header.string_table_offset.get(),
+        backtrace: Backtrace::generate(),
       }
     })?;
     let hash_key_table = get_string_table(header.hash_key_offset.get(), data, || {
       OpenError::HashKeyTableMisaligned {
         size: data.len(),
         offset: header.hash_key_offset.get(),
+        backtrace: Backtrace::generate(),
       }
     })?;
 
@@ -134,6 +143,7 @@ impl<'a, O: ByteOrder> BymlReader<'a, O> {
       return Err(OpenError::RootNodeMisaligned {
         size: data.len(),
         offset: root_node_offset,
+        backtrace: Backtrace::generate(),
       });
     };
 
@@ -142,12 +152,14 @@ impl<'a, O: ByteOrder> BymlReader<'a, O> {
       .ok_or(OpenError::RootNodeOutOfBounds {
         size: data.len(),
         offset: root_node_offset,
+        backtrace: Backtrace::generate(),
       })?;
     let container_header = ContainerHeader::<O>::read_from_bytes(container_header).unwrap();
 
     let data_type =
       DataType::from_u8(container_header.data_type).ok_or(OpenError::InvalidDataType {
         value: container_header.data_type,
+        backtrace: Backtrace::generate(),
       })?;
 
     match data_type {
@@ -157,7 +169,7 @@ impl<'a, O: ByteOrder> BymlReader<'a, O> {
           container_header.entries(),
           root_node_offset as usize,
         )
-        .map_err(|error| OpenError::Container { error })?;
+        .map_err(|source| OpenError::Container { source })?;
         Ok(Self::Array(BymlReaderArray {
           data,
           string_table,
@@ -174,7 +186,7 @@ impl<'a, O: ByteOrder> BymlReader<'a, O> {
           root_node_offset as usize,
           hash_key_table.as_ref(),
         )
-        .map_err(|error| OpenError::Container { error })?;
+        .map_err(|source| OpenError::Container { source })?;
 
         Ok(BymlReader::Dictionary(BymlReaderDict {
           data,
@@ -184,7 +196,10 @@ impl<'a, O: ByteOrder> BymlReader<'a, O> {
           _p: PhantomData,
         }))
       }
-      _ => Err(OpenError::NonContainerType { value: data_type }),
+      _ => Err(OpenError::NonContainerType {
+        value: data_type,
+        backtrace: Backtrace::generate(),
+      }),
     }
   }
 
@@ -195,6 +210,29 @@ impl<'a, O: ByteOrder> BymlReader<'a, O> {
 
     array
   }
+}
+
+macro_rules! getter_impls {
+  (
+    [$ty: ty, $param: ident: $param_ty: ty]
+    $(($func: ident, $ret_ty: ty, $variant: ident)),*
+  ) => {
+    impl<'a, O: ByteOrder> $ty {
+      $(
+        pub fn $func(&'a self, $param: $param_ty) -> Result<Option<$ret_ty>, ElementReadError> {
+          match self.get_element($param)? {
+            Some(BymlReaderNode::$variant(value)) => Ok(Some(value)),
+            Some(element) => Err(ElementReadError::UnexpectedDataType {
+              expected: DataType::$variant,
+              actual: element.data_type(),
+              backtrace: Backtrace::generate()
+            }),
+            None => Ok(None)
+          }
+        }
+      )*
+    }
+  };
 }
 
 pub struct BymlReaderArray<'a, O: ByteOrder> {
@@ -220,6 +258,7 @@ impl<'a, O: ByteOrder> BymlReaderArray<'a, O> {
         .ok_or(ContainerError::DataTypesOutOfBounds {
           size: data.len(),
           offset: start as u32 + 4,
+          backtrace: Backtrace::generate(),
         })?;
 
     data_types.iter().enumerate().try_for_each(
@@ -227,6 +266,7 @@ impl<'a, O: ByteOrder> BymlReaderArray<'a, O> {
         DataType::from_u8(*data_type).ok_or(ContainerError::InvalidElementDataType {
           element_index: index,
           value: *data_type,
+          backtrace: Backtrace::generate(),
         })?;
 
         Ok(())
@@ -243,6 +283,7 @@ impl<'a, O: ByteOrder> BymlReaderArray<'a, O> {
       .ok_or(ContainerError::ValuesOutOfBounds {
         size: data.len(),
         offset: values_start as u32,
+        backtrace: Backtrace::generate(),
       })?;
 
     let values = <[U32<O>]>::ref_from_bytes_with_elems(values, entries as usize).unwrap();
@@ -267,6 +308,7 @@ impl<'a, O: ByteOrder> BymlReaderArray<'a, O> {
         .ok_or(ElementReadError::ValueOutOfBounds {
           size: self.data.len(),
           offset: value,
+          backtrace: Backtrace::generate(),
         })
     };
 
@@ -275,9 +317,14 @@ impl<'a, O: ByteOrder> BymlReaderArray<'a, O> {
         let string = self
           .string_table
           .as_ref()
-          .ok_or(ElementReadError::NoStringTable)?
+          .ok_or(ElementReadError::NoStringTable {
+            backtrace: Backtrace::generate(),
+          })?
           .read_string(value)
-          .map_err(|error| ElementReadError::StringReadError { error })?;
+          .map_err(|source| ElementReadError::StringReadError {
+            source,
+            backtrace: Backtrace::generate(),
+          })?;
 
         Ok(Some(BymlReaderNode::<O>::String(string)))
       }
@@ -287,7 +334,7 @@ impl<'a, O: ByteOrder> BymlReaderArray<'a, O> {
 
         let (data_types, values) =
           BymlReaderArray::get_components(self.data, container_header.entries(), value as usize)
-            .map_err(|error| ElementReadError::Array { error })?;
+            .map_err(|source| ElementReadError::Container { source })?;
 
         Ok(Some(BymlReaderNode::Array(BymlReaderArray {
           data: self.data,
@@ -308,7 +355,7 @@ impl<'a, O: ByteOrder> BymlReaderArray<'a, O> {
           value as usize,
           self.hash_key_table.as_ref(),
         )
-        .map_err(|error| ElementReadError::Array { error })?;
+        .map_err(|source| ElementReadError::Container { source })?;
 
         Ok(Some(BymlReaderNode::Dictionary(BymlReaderDict {
           data: self.data,
@@ -356,6 +403,20 @@ impl<'a, O: ByteOrder> BymlReaderArray<'a, O> {
   }
 }
 
+getter_impls! {
+  [BymlReaderArray<'a, O>, index: u32]
+  (get_array, BymlReaderArray<'a, O>, Array),
+  (get_dict, BymlReaderDict<'a, O>, Dictionary),
+  (get_bool, bool, Bool),
+  (get_i32, i32, I32),
+  (get_u32, u32, U32),
+  (get_f32, f32, F32),
+  (get_i64, i64, I64),
+  (get_u64, u64, U64),
+  (get_f64, f64, F64),
+  (get_cstring, &'a CStr, String)
+}
+
 impl<'a, O: ByteOrder> Debug for BymlReaderArray<'a, O> {
   fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
     self.values().collect::<Result<Vec<_>, _>>().fmt(f)
@@ -378,7 +439,9 @@ impl<'a, O: ByteOrder> BymlReaderDict<'a, O> {
     hash_key_table: Option<&StringTable<'a, O>>,
   ) -> Result<(&'a [DictEntry<O>], StringTable<'a, O>), ContainerError> {
     let Some(hash_key_table) = hash_key_table else {
-      return Err(ContainerError::NoHashKeyTable);
+      return Err(ContainerError::NoHashKeyTable {
+        backtrace: Backtrace::generate(),
+      });
     };
 
     let entries_end = start + 4 + entries as usize * size_of::<DictEntry<O>>();
@@ -389,6 +452,7 @@ impl<'a, O: ByteOrder> BymlReaderDict<'a, O> {
         .ok_or(ContainerError::DataTypesOutOfBounds {
           size: data.len(),
           offset: start as u32 + 4,
+          backtrace: Backtrace::generate(),
         })?;
 
     let try_dict_entries =
@@ -399,6 +463,7 @@ impl<'a, O: ByteOrder> BymlReaderDict<'a, O> {
         DataType::from_u8(entry.data_type).ok_or(ContainerError::InvalidElementDataType {
           element_index: index,
           value: entry.data_type,
+          backtrace: Backtrace::generate(),
         })?;
 
         Ok(())
@@ -444,7 +509,10 @@ impl<'a, O: ByteOrder> BymlReaderDict<'a, O> {
       let value = self
         .hash_key_table
         .read_string(entry.hash_key_index())
-        .map_err(|error| ElementReadError::HashKeyReadError { error })?;
+        .map_err(|source| ElementReadError::HashKeyReadError {
+          source,
+          backtrace: Backtrace::generate(),
+        })?;
 
       let ordering = index
         .partial_cmp(&value.to_bytes())
@@ -484,6 +552,7 @@ impl<'a, O: ByteOrder> BymlReaderDict<'a, O> {
         .ok_or(ElementReadError::ValueOutOfBounds {
           size: self.data.len(),
           offset: value,
+          backtrace: Backtrace::generate(),
         })
     };
 
@@ -492,9 +561,14 @@ impl<'a, O: ByteOrder> BymlReaderDict<'a, O> {
         let string = self
           .string_table
           .as_ref()
-          .ok_or(ElementReadError::NoStringTable)?
+          .ok_or(ElementReadError::NoStringTable {
+            backtrace: Backtrace::generate(),
+          })?
           .read_string(value)
-          .map_err(|error| ElementReadError::StringReadError { error })?;
+          .map_err(|source| ElementReadError::StringReadError {
+            source,
+            backtrace: Backtrace::generate(),
+          })?;
 
         Ok(Some(BymlReaderNode::<O>::String(string)))
       }
@@ -504,7 +578,7 @@ impl<'a, O: ByteOrder> BymlReaderDict<'a, O> {
 
         let (data_types, values) =
           BymlReaderArray::get_components(self.data, container_header.entries(), value as usize)
-            .map_err(|error| ElementReadError::Array { error })?;
+            .map_err(|source| ElementReadError::Container { source })?;
 
         Ok(Some(BymlReaderNode::Array(BymlReaderArray {
           data: self.data,
@@ -525,7 +599,7 @@ impl<'a, O: ByteOrder> BymlReaderDict<'a, O> {
           value as usize,
           Some(&self.hash_key_table),
         )
-        .map_err(|error| ElementReadError::Array { error })?;
+        .map_err(|source| ElementReadError::Container { source })?;
 
         Ok(Some(BymlReaderNode::Dictionary(BymlReaderDict {
           data: self.data,
@@ -595,7 +669,10 @@ impl<'a, O: ByteOrder> BymlReaderDict<'a, O> {
       let string = self
         .hash_key_table
         .read_string(self.entries[index].hash_key_index())
-        .map_err(|error| ElementReadError::HashKeyReadError { error })?;
+        .map_err(|source| ElementReadError::HashKeyReadError {
+          source,
+          backtrace: Backtrace::generate(),
+        })?;
       Ok((
         string,
         self.get_element_by_key_bytes(string.to_bytes())?.unwrap(),
@@ -610,10 +687,16 @@ impl<'a, O: ByteOrder> BymlReaderDict<'a, O> {
       let string = self
         .hash_key_table
         .read_string(self.entries[index].hash_key_index())
-        .map_err(|error| ElementReadError::HashKeyReadError { error })?;
+        .map_err(|source| ElementReadError::HashKeyReadError {
+          source,
+          backtrace: Backtrace::generate(),
+        })?;
       let string = string
         .to_str()
-        .map_err(|error| ElementReadError::NonUtf8String { error })?;
+        .map_err(|source| ElementReadError::NonUtf8String {
+          source,
+          backtrace: Backtrace::generate(),
+        })?;
       Ok((
         string,
         self.get_element_by_key_bytes(string.as_bytes())?.unwrap(),
@@ -629,7 +712,10 @@ impl<'a, O: ByteOrder> BymlReaderDict<'a, O> {
     value
       .to_str()
       .map(Some)
-      .map_err(|error| ElementReadError::NonUtf8String { error })
+      .map_err(|error| ElementReadError::NonUtf8String {
+        source: error,
+        backtrace: Backtrace::generate(),
+      })
   }
 
   pub fn get_type(&self, key: &str) -> Result<Option<DataType>, ElementReadError> {
@@ -637,29 +723,6 @@ impl<'a, O: ByteOrder> BymlReaderDict<'a, O> {
       .get_entry_by_key_bytes(key.as_bytes())
       .map(|value| value.map(|(_, data_type)| data_type))
   }
-}
-
-macro_rules! getter_impls {
-
-  (
-    [$ty: ty, $param: ident: $param_ty: ty]
-    $(($func: ident, $ret_ty: ty, $variant: ident)),*
-  ) => {
-    impl<'a, O: ByteOrder> $ty {
-      $(
-        pub fn $func(&'a self, $param: $param_ty) -> Result<Option<$ret_ty>, ElementReadError> {
-          match self.get_element($param)? {
-            Some(BymlReaderNode::$variant(value)) => Ok(Some(value)),
-            Some(element) => Err(ElementReadError::UnexpectedDataType {
-              expected: DataType::$variant,
-              actual: element.data_type()
-            }),
-            None => Ok(None)
-          }
-        }
-      )*
-    }
-  };
 }
 
 getter_impls! {

@@ -37,12 +37,12 @@ impl<O: ByteOrder> ContainerHeader<O> {
     }
   }
 
-  pub fn new(data_type: DataType, entries: u32) -> Self {
+  pub fn new(data_type: DataType, entries: u32) -> Option<Self> {
     if entries >= 2u32.pow(24) {
-      panic!("entries greater than u24")
+      return None;
     }
 
-    Self {
+    Some(Self {
       data_type: data_type as _,
       entries: match O::ORDER {
         Order::BigEndian => {
@@ -55,7 +55,7 @@ impl<O: ByteOrder> ContainerHeader<O> {
         }
       },
       _p: PhantomData,
-    }
+    })
   }
 }
 
@@ -89,12 +89,12 @@ impl<O: ByteOrder> DictEntry<O> {
     }
   }
 
-  pub fn new(data_type: DataType, hash_key_index: u32, value: u32) -> Self {
+  pub fn new(data_type: DataType, hash_key_index: u32, value: u32) -> Option<Self> {
     if hash_key_index >= 2u32.pow(24) {
-      panic!("hash key index greater than u24")
+      return None;
     }
 
-    Self {
+    Some(Self {
       hash_key_index: match O::ORDER {
         Order::BigEndian => {
           let [_, a, b, c] = hash_key_index.to_be_bytes();
@@ -106,8 +106,8 @@ impl<O: ByteOrder> DictEntry<O> {
         }
       },
       data_type: data_type as _,
-      value: U32::new(value)
-    }
+      value: U32::new(value),
+    })
   }
 }
 
