@@ -272,6 +272,7 @@ pub mod write_error {
   pub(super) struct Overflowed;
 
   impl From<Overflowed> for WriteError {
+    #[track_caller]
     fn from(_: Overflowed) -> Self {
       WriteError::Overflowed {
         backtrace: Backtrace::generate(),

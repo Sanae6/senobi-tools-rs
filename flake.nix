@@ -23,13 +23,30 @@
       in
         with pkgs; {
           formatter = alejandra;
-          devShells.default = mkShell {
+          devShells.default = mkShell rec {
             buildInputs = [
               (pkgs.fenix.combine [
                 pkgs.fenix.stable.defaultToolchain
                 pkgs.fenix.stable.rust-src
               ])
-            ];
+            libxkbcommon
+            libGL
+            udev
+            openssl
+            pkg-config
+            fontconfig
+
+            # WINIT_UNIX_BACKEND=wayland
+            wayland
+
+            # WINIT_UNIX_BACKEND=x11
+            xorg.libXcursor
+            xorg.libXrandr
+            xorg.libXi
+            xorg.libX11
+          ];
+
+          LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath buildInputs}";
           };
         }
     );

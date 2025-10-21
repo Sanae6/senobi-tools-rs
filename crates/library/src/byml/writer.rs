@@ -280,7 +280,7 @@ impl BymlWriter {
   // todo: panic handling for arithmetic
   pub fn write<O: ByteOrder>(
     &self,
-    mut writer: impl Write + Seek,
+    writer: &mut (impl Write + Seek),
     version: Version,
   ) -> Result<(), WriteError> {
     let mut strings: HashSet<&CString, HashState> = HashSet::default();
@@ -402,9 +402,9 @@ impl BymlWriter {
     };
 
     writer.write_all(header.as_bytes())?;
-    let keys = Self::write_string_table::<O>(keys, &mut writer)?;
+    let keys = Self::write_string_table::<O>(keys, writer)?;
     writer.seek(SeekFrom::Start(string_table_offset as u64))?;
-    let strings = Self::write_string_table::<O>(strings, &mut writer)?;
+    let strings = Self::write_string_table::<O>(strings, writer)?;
     writer.seek(SeekFrom::Start(nodes_start_offset as u64))?;
 
     let mut long_offset = nodes_start_offset
@@ -433,7 +433,7 @@ impl BymlWriter {
             element_types.push(element.data_type());
             element_values.push(Self::get_value::<O>(
               &containers,
-              &mut writer,
+              writer,
               nodes_start_offset as u32,
               &mut long_offset,
               &strings,
@@ -455,7 +455,7 @@ impl BymlWriter {
             let key = keys.get(key).expect("missed key in key ingest");
             let value = Self::get_value::<O>(
               &containers,
-              &mut writer,
+              writer,
               nodes_start_offset as u32,
               &mut long_offset,
               &strings,
