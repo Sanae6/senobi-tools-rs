@@ -4,15 +4,9 @@ pub mod writer;
 
 pub const MAXIMUM_SUPPORTED_VERSION: u16 = 3;
 
-#[derive(Debug)]
-pub enum Order {
-  LittleEndian,
-  BigEndian,
-}
-
 use string_table_error::StringTableError;
 mod string_table_error {
-  use std::backtrace::Backtrace;
+  use snafu::Backtrace;
 
   use snafu::Snafu;
 
@@ -44,7 +38,7 @@ mod array_error {
 
   #[derive(Snafu, Debug)]
   pub enum ContainerError {
-    #[snafu(display("not an array, got data type {value:02X}"))]
+    #[snafu(display("not an array, got data type 0x{value:02X}"))]
     IncorrectDataType {
       value: u8,
       backtrace: snafu::Backtrace,
@@ -55,7 +49,7 @@ mod array_error {
       offset: u32,
       backtrace: snafu::Backtrace,
     },
-    #[snafu(display("not an array, got data type {value:02X}"))]
+    #[snafu(display("not an array, got data type 0x{value:02X}"))]
     InvalidElementDataType {
       element_index: usize,
       value: u8,
@@ -74,11 +68,11 @@ mod array_error {
 
 use open_error::OpenError;
 mod open_error {
-  use std::backtrace::Backtrace;
+  use snafu::Backtrace;
 
   use snafu::Snafu;
 
-  use crate::byml::{Order, StringTableError, array_error::ContainerError, types::DataType};
+  use crate::{byml::{ array_error::ContainerError, types::DataType, StringTableError}, util::Order};
 
   #[derive(Snafu, Debug)]
   pub enum OpenError {
@@ -244,9 +238,9 @@ mod element_error {
 }
 
 pub mod write_error {
-  use std::{backtrace::Backtrace, io};
+  use std::io;
 
-  use snafu::{GenerateImplicitData, Snafu};
+  use snafu::{Backtrace, GenerateImplicitData, Snafu};
 
   #[derive(Snafu, Debug)]
   pub enum WriteError {

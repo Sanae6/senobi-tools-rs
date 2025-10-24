@@ -1,6 +1,6 @@
-use std::{backtrace::Backtrace, ffi::CStr, marker::PhantomData, ops::Range};
+use std::{ffi::CStr, marker::PhantomData, ops::Range};
 
-use snafu::{Snafu, ensure};
+use snafu::{ensure, Backtrace, Snafu};
 use zerocopy::{ByteOrder, FromBytes};
 
 use crate::sarc::types::{SarcHeader, SfatHeader, SfatNode, SfntHeader};

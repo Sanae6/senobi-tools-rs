@@ -1,0 +1,8 @@
+[package]
+name = "senobi-textures"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+modular-bitfield = "0.13.0"
+ouroboros = "0.18.5"

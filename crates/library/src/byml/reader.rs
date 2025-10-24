@@ -1,20 +1,18 @@
-use std::{backtrace::Backtrace, ffi::CStr, fmt::Debug, marker::PhantomData};
+use std::{ffi::CStr, fmt::Debug, marker::PhantomData};
 
 use num_traits::FromPrimitive;
-use snafu::GenerateImplicitData;
+use snafu::{Backtrace, GenerateImplicitData};
 use zerocopy::{ByteOrder, F64, FromBytes, I64, Order as ZCOrder, TryFromBytes, U32, U64};
 
 use crate::{
   byml::{
-    ElementReadError, OpenError, Order, StringReadError, StringTableError,
-    array_error::ContainerError,
-    types::{ContainerHeader, DataType, DictEntry, Header, TryDictEntry},
+    array_error::ContainerError, types::{ContainerHeader, DataType, DictEntry, Header, TryDictEntry}, ElementReadError, OpenError, StringReadError, StringTableError
   },
-  util::align_up,
+  util::{align_up, Order},
 };
 
 #[derive(Clone, Copy)]
-struct StringTable<'a, O: ByteOrder> {
+struct StringTable<'a, O> {
   offset_table: &'a [U32<O>],
   start_offset: usize,
   string_data: &'a [u8],
@@ -66,7 +64,7 @@ impl<'a, O: ByteOrder> StringTable<'a, O> {
   }
 }
 
-pub enum BymlReader<'a, O: ByteOrder> {
+pub enum BymlReader<'a, O> {
   Array(BymlReaderArray<'a, O>),
   Dictionary(BymlReaderDict<'a, O>),
   Empty,
@@ -74,7 +72,6 @@ pub enum BymlReader<'a, O: ByteOrder> {
 
 impl<'a, O: ByteOrder> BymlReader<'a, O> {
   pub fn new(data: &'a [u8]) -> Result<Self, OpenError> {
-    assert!(size_of::<usize>() >= 4, "cannot be executed on 16 bit platforms");
     let header = data
       .get(..size_of::<Header<O>>())
       .ok_or(OpenError::NotEnoughDataForHeader {
@@ -244,7 +241,7 @@ macro_rules! getter_impls {
   };
 }
 
-pub struct BymlReaderArray<'a, O: ByteOrder> {
+pub struct BymlReaderArray<'a, O> {
   data: &'a [u8],
   string_table: Option<StringTable<'a, O>>,
   hash_key_table: Option<StringTable<'a, O>>,
@@ -432,7 +429,7 @@ impl<'a, O: ByteOrder> Debug for BymlReaderArray<'a, O> {
   }
 }
 
-pub struct BymlReaderDict<'a, O: ByteOrder> {
+pub struct BymlReaderDict<'a, O> {
   data: &'a [u8],
   string_table: Option<StringTable<'a, O>>,
   hash_key_table: StringTable<'a, O>,

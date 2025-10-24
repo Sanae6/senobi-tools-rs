@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bitfield-struct = "0.11.0"
 either = "1.15.0"
 modular-bitfield = "0.13.0"
 num-derive = "0.4.2"
 num-traits = "0.2.19"
 ordered-float = "5.1.0"
-snafu = "0.8.9"
+ouroboros = "0.18.5"
+snafu = { version = "0.8.9", features = ["backtrace", "backtraces-impl-backtrace-crate"] }
 szs = "0.3.7"
 zerocopy = { version = "0.8.27", features = ["derive"] }
 

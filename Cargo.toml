@@ -1,5 +1,7 @@
 [workspace]
 resolver = "3"
-members = [
-  "crates/library"
+members = ["crates/editor",
+  "crates/library",
+  "crates/textures",
+  "crates/trustfall"
 ]

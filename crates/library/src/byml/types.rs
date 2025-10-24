@@ -17,7 +17,7 @@ pub struct Header<O: ByteOrder> {
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
-pub struct ContainerHeader<O: ByteOrder> {
+pub struct ContainerHeader<O> {
   pub data_type: u8,
   entries: [u8; 3],
   _p: PhantomData<O>,
@@ -61,7 +61,7 @@ impl<O: ByteOrder> ContainerHeader<O> {
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
-pub struct TryDictEntry<O: ByteOrder> {
+pub struct TryDictEntry<O> {
   pub hash_key_index: [u8; 3],
   pub data_type: u8,
   pub value: U32<O>,
@@ -69,7 +69,7 @@ pub struct TryDictEntry<O: ByteOrder> {
 
 #[derive(TryFromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
-pub struct DictEntry<O: ByteOrder> {
+pub struct DictEntry<O> {
   pub hash_key_index: [u8; 3],
   pub data_type: DataType,
   pub value: U32<O>,
