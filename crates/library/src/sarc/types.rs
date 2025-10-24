@@ -30,6 +30,16 @@ pub struct SfatNode<O: ByteOrder> {
   pub relative_file_end: U32<O>,
 }
 
+impl<O: ByteOrder> SfatNode<O> {
+  pub fn name_offset(&self) -> Option<u32> {
+    if self.file_attributes.get() & 0x01000000 != 0 {
+      Some((self.file_attributes.get() & 0xFFFF) * 4)
+    } else {
+      None
+    }
+  }
+}
+
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]
 pub struct SfntHeader<O: ByteOrder> {

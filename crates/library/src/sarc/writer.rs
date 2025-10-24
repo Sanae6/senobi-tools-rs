@@ -1,1 +1,3 @@
-pub struct 
+pub struct SarcWriter {
+
+}

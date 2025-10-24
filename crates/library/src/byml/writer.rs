@@ -238,6 +238,7 @@ impl BymlWriter {
   }
 
   fn new(container: Container) -> Self {
+    assert!(size_of::<usize>() >= 4, "cannot be executed on 16 bit platforms");
     let mut containers = HashSet::default();
 
     let mut stack = Vec::new();

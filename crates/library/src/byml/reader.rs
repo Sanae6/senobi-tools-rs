@@ -74,6 +74,7 @@ pub enum BymlReader<'a, O: ByteOrder> {
 
 impl<'a, O: ByteOrder> BymlReader<'a, O> {
   pub fn new(data: &'a [u8]) -> Result<Self, OpenError> {
+    assert!(size_of::<usize>() >= 4, "cannot be executed on 16 bit platforms");
     let header = data
       .get(..size_of::<Header<O>>())
       .ok_or(OpenError::NotEnoughDataForHeader {
@@ -210,6 +211,14 @@ impl<'a, O: ByteOrder> BymlReader<'a, O> {
 
     array
   }
+  
+    pub fn unwrap_dictionary(self) -> BymlReaderDict<'a, O> {
+      let BymlReader::Dictionary(dict) = self else {
+        panic!("unwrapped a non dict type")
+      };
+  
+      dict
+    }
 }
 
 macro_rules! getter_impls {

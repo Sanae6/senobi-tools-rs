@@ -153,7 +153,7 @@ pub fn decompress(reader: &mut (impl Read + Seek)) -> Result<Box<[u8]>, Decompre
       groups.refill_and_pop(read_buffer[0])
     };
 
-    println!("got {current_group:?}");
+//    println!("got {current_group:?}");
 
     match current_group {
       Group::Uncompressed => {
@@ -163,12 +163,12 @@ pub fn decompress(reader: &mut (impl Read + Seek)) -> Result<Box<[u8]>, Decompre
       Group::Copy => {
         reader.read_exact(&mut read_buffer[0..=1])?;
 
-        println!(
-          "{:02X} {:02X} {:02X}",
-          read_buffer[0],
-          read_buffer[1],
-          read_buffer[0] & 0xF0
-        );
+//        println!(
+//          "{:02X} {:02X} {:02X}",
+//          read_buffer[0],
+//          read_buffer[1],
+//          read_buffer[0] & 0xF0
+//        );
         let (copy_count, lookback_distance) = if read_buffer[0] & 0xF0 == 0 {
           reader.read_exact(&mut read_buffer[2..=2])?;
           let long_copy = LongCopy::from_bytes(read_buffer);
@@ -209,3 +209,4 @@ pub fn decompress(reader: &mut (impl Read + Seek)) -> Result<Box<[u8]>, Decompre
 
   Ok(decomp_data.into_boxed_slice())
 }
+
