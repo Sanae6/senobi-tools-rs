@@ -1,3 +1,4 @@
 mod util;
 pub mod bntx;
-mod gfx;
+pub mod gfx;
+pub mod bfres;

@@ -1,6 +1,9 @@
+use std::num::NonZeroU32;
+
 use modular_bitfield::prelude::*;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
+use tegra_swizzle::surface::BlockDim;
 use zerocopy::{ByteOrder, FromBytes, Immutable, IntoBytes, KnownLayout, U16, U32, Unaligned};
 
 #[bitfield(bytes = 1)]
@@ -65,7 +68,7 @@ pub enum ChannelFormat {
   BC4 = 0x1d,
   BC5 = 0x1e,
   BC6H = 0x1f,
-  BC7U = 0x20,
+  BC7 = 0x20,
   ASTC_4x4 = 0x2d,
   ASTC_5x4 = 0x2e,
   ASTC_5x5 = 0x2f,
@@ -99,4 +102,45 @@ pub enum TypeFormat {
 
 pub fn decode_image_format(value: u32) -> Option<(ChannelFormat, TypeFormat)> {
   ChannelFormat::from_u32((value & 0xff00) >> 8).zip(TypeFormat::from_u32(value & 0xff))
+}
+
+pub struct FormatInfo {
+  pub bytes_per_pixel: u32,
+  pub block_dim: BlockDim,
+}
+
+impl FormatInfo {
+  const fn block(
+    bytes_per_pixel: u32,
+    block_width: u32,
+    block_height: u32,
+    block_depth: u32,
+  ) -> FormatInfo {
+    Self {
+      bytes_per_pixel,
+      block_dim: BlockDim {
+        width: NonZeroU32::new(block_width).unwrap(),
+        height: NonZeroU32::new(block_height).unwrap(),
+        depth: NonZeroU32::new(block_depth).unwrap(),
+      },
+    }
+  }
+
+  pub fn from_image_format(
+    channel_format: ChannelFormat,
+    type_format: TypeFormat,
+  ) -> Option<FormatInfo> {
+    let format = match (channel_format, type_format) {
+      (ChannelFormat::BC1, _) => Self::block(8, 4, 4, 1),
+      (ChannelFormat::BC2, _) => Self::block(16, 4, 4, 1),
+      (ChannelFormat::BC3, _) => Self::block(16, 4, 4, 1),
+      (ChannelFormat::BC4, _) => Self::block(8, 4, 4, 1),
+      (ChannelFormat::BC5, _) => Self::block(16, 4, 4, 1),
+      (ChannelFormat::BC6H, _) => Self::block(16, 4, 4, 1),
+      (ChannelFormat::BC7, _) => Self::block(16, 4, 4, 1),
+      _ => return None,
+    };
+
+    Some(format)
+  }
 }

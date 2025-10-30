@@ -94,7 +94,7 @@ pub fn read_res_dict<
   values_offset: usize,
   // FnMut(key: &str, element: &mut T)
   mut node_validator: impl FnMut(&'a str, &'a T) -> Result<E, ReadError>,
-) -> Result<Vec<(&'a str, E)>, ResDictError<ReadError>> {
+) -> Result<HashMap<&'a str, E>, ResDictError<ReadError>> {
   let header_end_offset =
     dict_offset
       .checked_add(size_of::<Header<O>>())
@@ -157,7 +157,7 @@ pub fn read_res_dict<
 
   let values = values.chunks_exact(size_of::<T>());
 
-  let mut dictionary = Vec::new();
+  let mut dictionary = HashMap::new();
 
   for (index, (node, value_data)) in nodes.iter().zip(values).enumerate() {
     let key_offset = node.key_offset.get() as usize + size_of::<u16>();
@@ -185,7 +185,7 @@ pub fn read_res_dict<
       offset: values_offset + size_of::<T>() * index,
     })?;
 
-    dictionary.push((key, value));
+    dictionary.insert(key, value);
   }
 
   Ok(dictionary)

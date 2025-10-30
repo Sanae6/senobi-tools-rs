@@ -12,7 +12,11 @@ ordered-float = "5.1.0"
 ouroboros = "0.18.5"
 snafu = { version = "0.8.9", features = ["backtrace", "backtraces-impl-backtrace-crate"] }
 szs = "0.3.7"
+tegra_swizzle = "0.4.0"
 zerocopy = { version = "0.8.27", features = ["derive"] }
 
 [dev-dependencies]
+ddsfile = "0.5.2"
+image = "0.25.8"
 snafu = { version = "0.8.9", features = ["backtrace"] }
+tegra_swizzle = "0.4.0"

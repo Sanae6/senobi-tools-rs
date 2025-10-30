@@ -7,28 +7,31 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
-  outputs = {
-    nixpkgs,
-    flake-utils,
-    fenix,
-    ...
-  }:
-    flake-utils.lib.eachDefaultSystem
-    (
-      system: let
-        overlays = [fenix.overlays.default];
+  outputs =
+    {
+      nixpkgs,
+      flake-utils,
+      fenix,
+      ...
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
+      let
+        overlays = [ fenix.overlays.default ];
         pkgs = import nixpkgs {
           inherit system overlays;
         };
       in
-        with pkgs; {
-          formatter = alejandra;
-          devShells.default = mkShell rec {
-            buildInputs = [
-              (pkgs.fenix.combine [
-                pkgs.fenix.stable.defaultToolchain
-                pkgs.fenix.stable.rust-src
-              ])
+      with pkgs;
+      {
+        formatter = alejandra;
+        devShells.default = mkShell rec {
+          buildInputs = [
+            (pkgs.fenix.combine [
+              pkgs.fenix.stable.defaultToolchain
+              pkgs.fenix.stable.rust-src
+            ])
+            xviewer
             libxkbcommon
             libGL
             udev
@@ -47,7 +50,7 @@
           ];
 
           LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath buildInputs}";
-          };
-        }
+        };
+      }
     );
 }
