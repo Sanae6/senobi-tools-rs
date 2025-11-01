@@ -122,6 +122,7 @@ impl<'a, O: ByteOrder> BntxReader<'a, O> {
 
     let textures = read_res_dict::<U64<O>, BntxTextureReader<'a, O>, O, BntxError>(
       file_data,
+      b"DIC_",
       container.texture_info_dictionary_offset.get() as _,
       container.texture_info_values_offset.get() as _,
       |key, texture| {

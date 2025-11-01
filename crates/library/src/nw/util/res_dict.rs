@@ -5,7 +5,7 @@ use std::{
 };
 
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu, ensure};
-use zerocopy::{ByteOrder, FromBytes, Immutable, KnownLayout, U16, U32, U64};
+use zerocopy::{ByteOrder, FromBytes, Immutable, IntoBytes, KnownLayout, U16, U32, U64};
 
 #[derive(Snafu, Debug)]
 pub enum ResDictError<ReadError: snafu::Error + snafu::ErrorCompat + 'static> {
@@ -59,9 +59,9 @@ pub enum ResDictError<ReadError: snafu::Error + snafu::ErrorCompat + 'static> {
   // apparently keys can just... be the same??
   // #[snafu(display("key string {value} (index: {index}) already exists in the dictionary"))]
   // KeyAlreadyExists {
-    // index: usize,
-    // value: String,
-    // backtrace: Backtrace,
+  // index: usize,
+  // value: String,
+  // backtrace: Backtrace,
   // },
 }
 
@@ -90,6 +90,7 @@ pub fn read_res_dict<
   ReadError: snafu::Error + snafu::ErrorCompat + 'static,
 >(
   file_data: &'a [u8],
+  expected_signature: &'static [u8; 4],
   dict_offset: usize,
   values_offset: usize,
   // FnMut(key: &str, element: &mut T)
@@ -111,9 +112,9 @@ pub fn read_res_dict<
     Header::<O>::read_from_bytes(header).expect("failed to validate header slice's size");
 
   ensure!(
-    header.magic == *b"_DIC",
+    header.magic == *expected_signature,
     IncorrectMagicSnafu {
-      expected: *b"_DIC",
+      expected: *expected_signature,
       actual: header.magic
     }
   );
@@ -189,4 +190,34 @@ pub fn read_res_dict<
   }
 
   Ok(dictionary)
+}
+
+#[derive(Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[repr(C)]
+pub struct DictRef<O: ByteOrder> {
+  pub array_offset: U64<O>,
+  pub dict_offset: U64<O>,
+}
+
+impl<O: ByteOrder> DictRef<O> {
+  pub fn read<
+    'a,
+    T: FromBytes + Immutable + KnownLayout + 'a,
+    E: 'a,
+    ReadError: snafu::Error + snafu::ErrorCompat + 'static,
+  >(
+    &self,
+    file_data: &'a [u8],
+    expected_signature: &'static [u8; 4],
+    // FnMut(key: &str, element: &mut T)
+    node_validator: impl FnMut(&'a str, &'a T) -> Result<E, ReadError>,
+  ) -> Result<HashMap<&'a str, E>, ResDictError<ReadError>> {
+    read_res_dict::<T, E, O, ReadError>(
+      file_data,
+      expected_signature,
+      self.dict_offset.get() as usize,
+      self.array_offset.get() as usize,
+      node_validator,
+    )
+  }
 }

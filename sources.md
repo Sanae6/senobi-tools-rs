@@ -1,0 +1,3 @@
+- [BfresLibrary](https://github.com/KillzXGaming/BfresLibrary) for the most comprehensive bfres deserializer and serializer available
+- [EPD ZeldaMods wiki](https://epd.zeldamods.org) for newer Bfres, Bntx, Byml formats
+- [Custom MK8 wiki](https://mk8.tockdom.com/) for Sarc and Yaz0 formats

@@ -34,7 +34,7 @@ pub enum DecompressionError {
     "attempted to copy {copy_count} bytes which would add data past the decompressed buffer's end {decompressed_size}, currently at {current_size}"
   ))]
   CopyingPastEnd {
-    copy_count: u8,
+    copy_count: u16,
     current_size: u32,
     decompressed_size: u32,
     backtrace: Backtrace,
@@ -43,7 +43,7 @@ pub enum DecompressionError {
     "attempted to copy {copy_count} bytes from {lookback_distance} bytes before the stream started"
   ))]
   CopyingFromBeforeStart {
-    copy_count: u8,
+    copy_count: u16,
     lookback_distance: u16,
     backtrace: Backtrace,
   },
@@ -173,13 +173,13 @@ pub fn decompress(reader: &mut (impl Read + Seek)) -> Result<Box<[u8]>, Decompre
           let long_copy = LongCopy::from_bytes(read_buffer);
           let lookback_distance =
             (long_copy.lookback_upper() as u16) << 8 | (long_copy.lookback_lower() as u16);
-          (long_copy.copy_count() + 0x12, lookback_distance + 1)
+          (long_copy.copy_count() as u16 + 0x12, lookback_distance + 1)
         } else {
           let short_copy = ShortCopy::from_bytes([read_buffer[0], read_buffer[1]]);
           let lookback_distance =
             (short_copy.lookback_upper() as u16) << 8 | (short_copy.lookback_lower() as u16);
 
-          (short_copy.copy_count() + 0x02, lookback_distance + 1)
+          (short_copy.copy_count() as u16 + 0x02, lookback_distance + 1)
         };
 
         ensure!(
